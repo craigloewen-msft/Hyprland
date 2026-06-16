@@ -17,6 +17,13 @@ namespace Render {
         virtual void            bind()   = 0;
         virtual void            unbind() = 0;
 
+        // WSL/WSLg shm present path: when the backing buffer is host memory
+        // (no dmabuf), rendering goes to an offscreen FBO that must be copied
+        // into the buffer's CPU mapping before presentation. Default no-op for
+        // zero-copy (dmabuf) renderbuffers.
+        virtual bool            isShm() { return false; }
+        virtual void            readbackToBuffer() {}
+
         WP<Aquamarine::IBuffer> m_hlBuffer;
 
       protected:

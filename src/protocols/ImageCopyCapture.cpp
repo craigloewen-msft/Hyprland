@@ -68,8 +68,15 @@ void CImageCopyCaptureSession::sendConstraints() {
         return;
     }
 
+    // On WSL/WSLg there is no linux-dmabuf device (PROTO::linuxDma is null), so
+    // advertise shm formats only and skip all dmabuf format/device events.
+    const bool hasDmabuf = static_cast<bool>(PROTO::linuxDma);
+
     for (DRMFormat format : formats) {
         m_resource->sendShmFormat(NFormatUtils::drmToShm(format));
+
+        if (!hasDmabuf)
+            continue;
 
         auto     modifiers = g_pHyprRenderer->getDRMFormatModifiers(format);
 
@@ -83,12 +90,14 @@ void CImageCopyCaptureSession::sendConstraints() {
         wl_array_release(&modsArr);
     }
 
-    dev_t           device    = PROTO::linuxDma->getMainDevice();
-    struct wl_array deviceArr = {
-        .size = sizeof(device),
-        .data = sc<void*>(&device),
-    };
-    m_resource->sendDmabufDevice(&deviceArr);
+    if (hasDmabuf) {
+        dev_t           device    = PROTO::linuxDma->getMainDevice();
+        struct wl_array deviceArr = {
+            .size = sizeof(device),
+            .data = sc<void*>(&device),
+        };
+        m_resource->sendDmabufDevice(&deviceArr);
+    }
 
     m_bufferSize = m_session->bufferSize();
     m_resource->sendBufferSize(m_bufferSize.x, m_bufferSize.y);
@@ -284,23 +293,26 @@ void CImageCopyCaptureCursorSession::sendConstraints() {
 
     m_sessionResource->sendShmFormat(NFormatUtils::drmToShm(format));
 
-    auto     modifiers = g_pHyprRenderer->getDRMFormatModifiers(format);
+    // shm-only on WSL/WSLg (no linux-dmabuf device).
+    if (PROTO::linuxDma) {
+        auto     modifiers = g_pHyprRenderer->getDRMFormatModifiers(format);
 
-    wl_array modsArr;
-    wl_array_init(&modsArr);
-    if (!modifiers.empty()) {
-        wl_array_add(&modsArr, modifiers.size() * sizeof(uint64_t));
-        memcpy(modsArr.data, modifiers.data(), modifiers.size() * sizeof(uint64_t));
+        wl_array modsArr;
+        wl_array_init(&modsArr);
+        if (!modifiers.empty()) {
+            wl_array_add(&modsArr, modifiers.size() * sizeof(uint64_t));
+            memcpy(modsArr.data, modifiers.data(), modifiers.size() * sizeof(uint64_t));
+        }
+        m_sessionResource->sendDmabufFormat(format, &modsArr);
+        wl_array_release(&modsArr);
+
+        dev_t           device    = PROTO::linuxDma->getMainDevice();
+        struct wl_array deviceArr = {
+            .size = sizeof(device),
+            .data = sc<void*>(&device),
+        };
+        m_sessionResource->sendDmabufDevice(&deviceArr);
     }
-    m_sessionResource->sendDmabufFormat(format, &modsArr);
-    wl_array_release(&modsArr);
-
-    dev_t           device    = PROTO::linuxDma->getMainDevice();
-    struct wl_array deviceArr = {
-        .size = sizeof(device),
-        .data = sc<void*>(&device),
-    };
-    m_sessionResource->sendDmabufDevice(&deviceArr);
 
     m_bufferSize = m_session->bufferSize();
     m_sessionResource->sendBufferSize(m_bufferSize.x, m_bufferSize.y);

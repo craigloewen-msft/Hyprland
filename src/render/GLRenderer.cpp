@@ -105,8 +105,15 @@ void CHyprGLRenderer::endRender(const std::function<void()>& renderingDoneCallba
     if (m_renderMode == RENDER_MODE_FULL_FAKE)
         return;
 
-    if (m_renderMode == RENDER_MODE_NORMAL)
+    if (m_renderMode == RENDER_MODE_NORMAL) {
+        // WSL/WSLg: the output buffer is host memory (wl_shm) with no dmabuf, so
+        // copy the rendered FBO into it before it is committed for presentation.
+        // No-op for zero-copy dmabuf renderbuffers.
+        if (m_currentRenderbuffer && m_currentRenderbuffer->isShm())
+            m_currentRenderbuffer->readbackToBuffer();
+
         PMONITOR->m_output->state->setBuffer(m_currentBuffer);
+    }
 
     if (!explicitSyncSupported()) {
         Log::logger->log(Log::TRACE, "renderer: Explicit sync unsupported, falling back to implicit in endRender");

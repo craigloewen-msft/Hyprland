@@ -314,6 +314,12 @@ namespace Render::GL {
         int                              m_drmFD = -1;
         std::string                      m_extensions;
 
+        // WSL/WSLg has no DRM render node; the GPU is reached via Mesa's d3d12
+        // driver on /dev/dxg and frames are presented through host wl_shm
+        // buffers. In this mode renderbuffers are offscreen FBOs read back to
+        // CPU memory instead of zero-copy dmabuf imports.
+        bool                             m_shmMode = false;
+
         bool                             m_fakeFrame            = false;
         bool                             m_applyFinalShader     = false;
         bool                             m_blend                = false;

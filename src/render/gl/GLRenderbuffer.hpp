@@ -13,8 +13,15 @@ namespace Render::GL {
         void bind() override;
         void unbind() override;
 
+        // In WSL/WSLg shm mode the underlying buffer is host memory with no
+        // dmabuf, so we render into an offscreen renderbuffer and copy the
+        // result into the buffer's CPU mapping before it is presented.
+        bool isShm() override;
+        void readbackToBuffer() override;
+
       private:
         void*  m_image = nullptr;
         GLuint m_rbo   = 0;
+        bool   m_shm   = false;
     };
 }

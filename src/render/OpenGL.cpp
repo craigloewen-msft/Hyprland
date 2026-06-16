@@ -50,6 +50,8 @@
 #include <string>
 #include <xf86drm.h>
 #include <fcntl.h>
+#include <unistd.h>
+#include <cstdlib>
 #include <gbm.h>
 #include <filesystem>
 #include <cstring>
@@ -159,6 +161,15 @@ void CHyprOpenGLImpl::initEGL(bool gbm) {
     attrs.push_back(EGL_NONE);
 
     m_eglDisplay = m_proc.eglGetPlatformDisplayEXT(gbm ? EGL_PLATFORM_GBM_KHR : EGL_PLATFORM_DEVICE_EXT, gbm ? m_gbmDevice : m_eglDevice, attrs.data());
+
+    if (!gbm && (m_eglDisplay == EGL_NO_DISPLAY || m_eglDisplay == nullptr)) {
+        // WSL/WSLg: the device platform may be unavailable (e.g. no device was
+        // enumerated). Fall back to the surfaceless Mesa platform, which also
+        // yields a hardware d3d12 context on /dev/dxg.
+        Log::logger->log(Log::WARN, "EGL: device platform display failed, trying EGL_PLATFORM_SURFACELESS_MESA");
+        m_eglDisplay = m_proc.eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, attrs.data());
+    }
+
     if (m_eglDisplay == EGL_NO_DISPLAY)
         RASSERT(false, "EGL: failed to create a platform display");
 
@@ -330,7 +341,40 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
     RASSERT(eglBindAPI(EGL_OPENGL_ES_API) != EGL_FALSE, "Couldn't bind to EGL's opengl ES API. This means your gpu driver f'd up. This is not a hyprland issue.");
 
     bool success = false;
-    if (EGLEXTENSIONS.contains("EXT_platform_device") || !m_proc.eglQueryDevicesEXT || !m_proc.eglQueryDeviceStringEXT) {
+
+    // WSL/WSLg has no DRM render node; the GPU is reached through Mesa's d3d12
+    // Gallium driver talking to /dev/dxg via libdxcore. There is no DRM fd to
+    // match against an EGL device, so enumerate the EGL device directly and
+    // create the display through the device (or surfaceless) platform. This
+    // mirrors aquamarine's CDRMRenderer::attemptDxg. Frames are later presented
+    // through host wl_shm buffers (see m_shmMode).
+    if (m_drmFD < 0 && access("/dev/dxg", F_OK) == 0) {
+        Log::logger->log(Log::INFO, "EGL: no DRM node but /dev/dxg present, using the d3d12 (WSLg) path");
+
+        // Mesa defaults to llvmpipe (software) unless told to use the d3d12
+        // driver. Only set when unset so an explicit choice is respected.
+        if (!getenv("GALLIUM_DRIVER") && !getenv("LIBGL_ALWAYS_SOFTWARE")) {
+            setenv("GALLIUM_DRIVER", "d3d12", 0);
+            Log::logger->log(Log::DEBUG, "EGL: defaulting GALLIUM_DRIVER=d3d12 for hardware acceleration");
+        }
+
+        if (m_proc.eglQueryDevicesEXT) {
+            EGLint nDevices = 0;
+            if (m_proc.eglQueryDevicesEXT(0, nullptr, &nDevices) && nDevices > 0) {
+                std::vector<EGLDeviceEXT> devices(nDevices);
+                if (m_proc.eglQueryDevicesEXT(nDevices, devices.data(), &nDevices) && nDevices > 0) {
+                    m_eglDevice = devices[0];
+                    Log::logger->log(Log::DEBUG, "EGL: dxg path using EGL device[0] of {} enumerated", nDevices);
+                }
+            }
+        }
+
+        m_shmMode = true;
+        success   = true;
+        initEGL(false); // device platform, with surfaceless fallback; never gbm
+    }
+
+    if (!success && (EGLEXTENSIONS.contains("EXT_platform_device") || !m_proc.eglQueryDevicesEXT || !m_proc.eglQueryDeviceStringEXT)) {
         m_eglDevice = eglDeviceFromDRMFD(m_drmFD);
 
         if (m_eglDevice != EGL_NO_DEVICE_EXT) {
