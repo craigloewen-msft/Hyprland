@@ -399,8 +399,8 @@ void CCompositor::initServer(std::string socketName, int socketFd) {
         } else
             Log::logger->log(Log::WARN, "wl_display_add_socket_fd for {} returned {}: skipping", socketName, RETVAL);
     } else {
-        // get socket, avoid using 0
-        for (int candidate = 1; candidate <= 32; candidate++) {
+        // WSLg publishes wayland-0 to user distributions.
+        for (int candidate = 0; candidate <= 32; candidate++) {
             const auto CANDIDATESTR = ("wayland-" + std::to_string(candidate));
             const auto RETVAL       = wl_display_add_socket(m_wlDisplay, CANDIDATESTR.c_str());
             if (RETVAL >= 0) {

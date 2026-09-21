@@ -12,9 +12,160 @@
 #include <hyprutils/signal/Signal.hpp>
 
 #include <dlfcn.h>
+#include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <vector>
 
 using namespace Render::GL;
 using namespace Hyprgraphics::Egl;
+
+namespace {
+    constexpr uint32_t BRIDGE_MAGIC   = 0x4e49574b;
+    constexpr uint32_t BRIDGE_VERSION = 2;
+
+    struct alignas(8) SBridgeHeader {
+        uint32_t magic;
+        uint32_t version;
+        uint32_t width;
+        uint32_t height;
+        uint32_t stride;
+        uint32_t format;
+        uint32_t damageX;
+        uint32_t damageY;
+        uint32_t damageWidth;
+        uint32_t damageHeight;
+        uint64_t payloadSize;
+        uint64_t sequence;
+    };
+
+    static_assert(sizeof(SBridgeHeader) == 56);
+
+    class CFramebufferBridge {
+      public:
+        ~CFramebufferBridge() {
+            close();
+        }
+
+        bool ensure(uint32_t width, uint32_t height, uint32_t format) {
+            const char* path = std::getenv("WSLG_RDP_FRAMEBUFFER");
+            if (!path || !*path)
+                path = std::getenv("WSLG_KWIN_FRAMEBUFFER");
+            if (!path || !*path) {
+                close();
+                return false;
+            }
+
+            const uint32_t stride       = width * 4;
+            const size_t   payloadSize  = sc<size_t>(stride) * height;
+            const size_t   requiredSize = sizeof(SBridgeHeader) + payloadSize;
+            if (m_mapping && m_path == path && m_mappingSize == requiredSize)
+                return true;
+
+            close();
+            const int fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+            if (fd < 0) {
+                Log::logger->log(Log::ERR, "rbo(shm): failed to create WSLg framebuffer bridge {}: {}", path, strerror(errno));
+                return false;
+            }
+
+            if (ftruncate(fd, requiredSize) != 0) {
+                Log::logger->log(Log::ERR, "rbo(shm): failed to size WSLg framebuffer bridge {}: {}", path, strerror(errno));
+                ::close(fd);
+                return false;
+            }
+
+            void* mapping = mmap(nullptr, requiredSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            ::close(fd);
+            if (mapping == MAP_FAILED) {
+                Log::logger->log(Log::ERR, "rbo(shm): failed to map WSLg framebuffer bridge {}: {}", path, strerror(errno));
+                return false;
+            }
+
+            m_mapping     = mapping;
+            m_mappingSize = requiredSize;
+            m_path        = path;
+            m_width       = width;
+            m_height      = height;
+            m_stride      = stride;
+            m_format      = format;
+            m_needsFull   = true;
+            memset(m_mapping, 0, m_mappingSize);
+            return true;
+        }
+
+        bool needsFullFrame() const {
+            return m_needsFull;
+        }
+
+        void publish(uint32_t x, uint32_t y, uint32_t width, uint32_t height, const uint8_t* pixels) {
+            if (!m_mapping || !width || !height)
+                return;
+
+            auto*             header = sc<SBridgeHeader*>(m_mapping);
+            std::atomic_ref   sequence(header->sequence);
+            const uint64_t    writeSequence = (sequence.load(std::memory_order_relaxed) + 1) | 1;
+            const size_t      rowBytes      = sc<size_t>(width) * 4;
+            auto*             framebuffer   = sc<uint8_t*>(m_mapping) + sizeof(SBridgeHeader);
+
+            sequence.store(writeSequence, std::memory_order_release);
+            header->magic        = BRIDGE_MAGIC;
+            header->version      = BRIDGE_VERSION;
+            header->width        = m_width;
+            header->height       = m_height;
+            header->stride       = m_stride;
+            header->format       = m_format;
+            header->damageX      = x;
+            header->damageY      = y;
+            header->damageWidth  = width;
+            header->damageHeight = height;
+            header->payloadSize  = sc<uint64_t>(m_stride) * m_height;
+
+            for (uint32_t row = 0; row < height; ++row) {
+                // Hyprland's output projection already accounts for OpenGL's
+                // framebuffer origin, so glReadPixels returns logical top-down
+                // rows for this offscreen output.
+                const auto* source = pixels + sc<size_t>(row) * rowBytes;
+                auto* destination = framebuffer + sc<size_t>(y + row) * m_stride + sc<size_t>(x) * 4;
+                memcpy(destination, source, rowBytes);
+            }
+
+            sequence.store(writeSequence + 1, std::memory_order_release);
+            m_needsFull = false;
+        }
+
+      private:
+        void close() {
+            if (m_mapping)
+                munmap(m_mapping, m_mappingSize);
+            m_mapping     = nullptr;
+            m_mappingSize = 0;
+            m_path.clear();
+            m_width     = 0;
+            m_height    = 0;
+            m_stride    = 0;
+            m_format    = 0;
+            m_needsFull = true;
+        }
+
+        void*       m_mapping     = nullptr;
+        size_t      m_mappingSize = 0;
+        std::string m_path;
+        uint32_t    m_width       = 0;
+        uint32_t    m_height      = 0;
+        uint32_t    m_stride      = 0;
+        uint32_t    m_format      = 0;
+        bool        m_needsFull   = true;
+    };
+
+    CFramebufferBridge g_framebufferBridge;
+}
 
 CGLRenderbuffer::~CGLRenderbuffer() {
     if (!g_pCompositor || g_pCompositor->m_isShuttingDown || !g_pHyprRenderer)
@@ -111,7 +262,7 @@ bool CGLRenderbuffer::isShm() {
     return m_shm;
 }
 
-void CGLRenderbuffer::readbackToBuffer() {
+void CGLRenderbuffer::readbackToBuffer(const CRegion& damage) {
     if (!m_shm || !m_good)
         return;
 
@@ -156,15 +307,41 @@ void CGLRenderbuffer::readbackToBuffer() {
     } else if (glFormat == GL_RGBA)
         glFormat = GL_BGRA_EXT;
 
-    const auto     WIDTH      = sc<int>(m_framebuffer->m_size.x);
-    const auto     HEIGHT     = sc<int>(m_framebuffer->m_size.y);
-    const uint32_t packStride = minStride(PFORMAT, WIDTH);
+    const int WIDTH  = sc<int>(m_framebuffer->m_size.x);
+    const int HEIGHT = sc<int>(m_framebuffer->m_size.y);
 
-    if (packStride == sc<uint32_t>(shm.stride))
-        glReadPixels(0, 0, WIDTH, HEIGHT, glFormat, PFORMAT->glType, pixelData);
-    else {
-        for (int y = 0; y < HEIGHT; ++y)
-            glReadPixels(0, y, WIDTH, 1, glFormat, PFORMAT->glType, pixelData + sc<size_t>(y) * shm.stride);
+    const bool bridgeReady = g_framebufferBridge.ensure(WIDTH, HEIGHT, shm.format);
+    const auto extents     = damage.pixman()->extents;
+    int        x           = std::clamp(sc<int>(extents.x1), 0, WIDTH);
+    int        y           = std::clamp(sc<int>(extents.y1), 0, HEIGHT);
+    int        right       = std::clamp(sc<int>(extents.x2), x, WIDTH);
+    int        bottom      = std::clamp(sc<int>(extents.y2), y, HEIGHT);
+
+    if (bridgeReady && g_framebufferBridge.needsFullFrame()) {
+        x      = 0;
+        y      = 0;
+        right  = WIDTH;
+        bottom = HEIGHT;
+    }
+
+    const int readWidth  = right - x;
+    const int readHeight = bottom - y;
+    if (readWidth > 0 && readHeight > 0) {
+        const uint32_t   rowBytes = minStride(PFORMAT, readWidth);
+        std::vector<uint8_t> readback(sc<size_t>(rowBytes) * readHeight);
+        // Hyprland's output projection maps logical top-left coordinates
+        // directly into this offscreen framebuffer, including for subregions.
+        const int        glY      = y;
+
+        glReadPixels(x, glY, readWidth, readHeight, glFormat, PFORMAT->glType, readback.data());
+
+        for (int row = 0; row < readHeight; ++row) {
+            auto* destination = pixelData + sc<size_t>(glY + row) * shm.stride + sc<size_t>(x) * 4;
+            memcpy(destination, readback.data() + sc<size_t>(row) * rowBytes, rowBytes);
+        }
+
+        if (bridgeReady)
+            g_framebufferBridge.publish(x, y, readWidth, readHeight, readback.data());
     }
 
     glPixelStorei(GL_PACK_ALIGNMENT, 4);

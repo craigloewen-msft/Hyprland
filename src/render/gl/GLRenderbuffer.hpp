@@ -17,7 +17,7 @@ namespace Render::GL {
         // dmabuf, so we render into an offscreen renderbuffer and copy the
         // result into the buffer's CPU mapping before it is presented.
         bool isShm() override;
-        void readbackToBuffer() override;
+        void readbackToBuffer(const CRegion& damage) override;
 
       private:
         void*  m_image = nullptr;

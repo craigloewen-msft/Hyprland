@@ -27,7 +27,7 @@ class CDRMSyncPointState {
 
     //
     operator bool() const {
-        return m_timeline;
+        return static_cast<bool>(m_timeline);
     }
 
   private:

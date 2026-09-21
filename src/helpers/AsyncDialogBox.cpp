@@ -149,7 +149,7 @@ void CAsyncDialogBox::kill() {
 }
 
 bool CAsyncDialogBox::isRunning() const {
-    return m_readEventSource;
+    return static_cast<bool>(m_readEventSource);
 }
 
 pid_t CAsyncDialogBox::getPID() const {

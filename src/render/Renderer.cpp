@@ -2184,7 +2184,7 @@ void IHyprRenderer::renderMonitor(PHLMONITOR pMonitor, bool commit) {
             sendFrameEventsToWorkspace(pMonitor, pMonitor->m_activeSpecialWorkspace, NOW);
     }
 
-    renderCursor = renderCursor && shouldRenderCursor();
+    renderCursor = renderCursor && shouldRenderCursor() && !std::getenv("WSLG_RDP_CLIENT_CURSOR");
 
     if (renderCursor) {
         TRACY_GPU_ZONE("RenderCursor");

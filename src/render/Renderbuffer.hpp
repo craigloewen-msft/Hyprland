@@ -22,7 +22,7 @@ namespace Render {
         // into the buffer's CPU mapping before presentation. Default no-op for
         // zero-copy (dmabuf) renderbuffers.
         virtual bool            isShm() { return false; }
-        virtual void            readbackToBuffer() {}
+        virtual void            readbackToBuffer(const CRegion&) {}
 
         WP<Aquamarine::IBuffer> m_hlBuffer;
 

@@ -55,7 +55,7 @@ bool CHyprGLRenderer::initRenderBuffer(SP<Aquamarine::IBuffer> buffer, uint32_t 
         return false;
     }
 
-    return m_currentRenderbuffer;
+    return static_cast<bool>(m_currentRenderbuffer);
 }
 
 bool CHyprGLRenderer::beginFullFakeRenderInternal(PHLMONITOR pMonitor, CRegion& damage, SP<IFramebuffer> fb, bool simple) {
@@ -110,7 +110,7 @@ void CHyprGLRenderer::endRender(const std::function<void()>& renderingDoneCallba
         // copy the rendered FBO into it before it is committed for presentation.
         // No-op for zero-copy dmabuf renderbuffers.
         if (m_currentRenderbuffer && m_currentRenderbuffer->isShm())
-            m_currentRenderbuffer->readbackToBuffer();
+            m_currentRenderbuffer->readbackToBuffer(g_pHyprRenderer->m_renderData.damage);
 
         PMONITOR->m_output->state->setBuffer(m_currentBuffer);
     }

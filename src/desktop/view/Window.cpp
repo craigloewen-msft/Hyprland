@@ -1491,7 +1491,7 @@ void CWindow::onX11ConfigureRequest(CBox box) {
 
     g_pHyprRenderer->damageWindow(m_self.lock());
 
-    if (!m_isFloating || isFullscreen() || g_layoutManager->dragController()->target() == m_self) {
+    if (!m_isFloating || isFullscreen() || g_layoutManager->dragController()->target() == m_target) {
         sendWindowSize(true);
         g_pInputManager->refocus();
         g_pHyprRenderer->damageWindow(m_self.lock());
@@ -2542,7 +2542,7 @@ void CWindow::unmapWindow() {
         g_pInputManager->releaseAllMouseButtons();
     }
 
-    if (m_self.lock() == g_layoutManager->dragController()->target())
+    if (m_target == g_layoutManager->dragController()->target())
         CKeybindManager::changeMouseBindMode(MBIND_INVALID);
 
     // remove the fullscreen window status from workspace if we closed it
@@ -2796,8 +2796,8 @@ std::optional<Vector2D> CWindow::minSize() {
         return m_ruleApplicator->minSize().value();
 
     // then check if we have any proto overrides
-    bool hasSizeHints = m_xwaylandSurface ? m_xwaylandSurface->m_sizeHints : false;
-    bool hasTopLevel  = m_xdgSurface ? m_xdgSurface->m_toplevel : false;
+    bool hasSizeHints = m_xwaylandSurface ? static_cast<bool>(m_xwaylandSurface->m_sizeHints) : false;
+    bool hasTopLevel  = m_xdgSurface ? static_cast<bool>(m_xdgSurface->m_toplevel) : false;
     if ((m_isX11 && !hasSizeHints) || (!m_isX11 && !hasTopLevel))
         return std::nullopt;
 
@@ -2841,7 +2841,7 @@ bool CWindow::canBeGroupedInto(SP<CGroup> group) {
         return false;
 
     static auto ALLOWGROUPMERGE       = CConfigValue<Config::INTEGER>("group:merge_groups_on_drag");
-    bool        isGroup               = m_group;
+    bool        isGroup               = static_cast<bool>(m_group);
     bool        disallowDragIntoGroup = g_layoutManager->dragController()->wasDraggingWindow() && isGroup && !sc<bool>(*ALLOWGROUPMERGE);
     return !g_pKeybindManager->m_groupsLocked           // global group lock disengaged
         && ((m_groupRules & GROUP_INVADE && m_firstMap) // window ignore local group locks, or
